@@ -1,0 +1,6 @@
+build
+bin/dxcompiler.dll
+bin/dxil.dll
+bin/*.exe
+bin/*.pdb
+bin/*.ilk
