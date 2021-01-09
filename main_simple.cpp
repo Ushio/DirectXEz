@@ -5,7 +5,7 @@ void run( ezdx::DeviceObject* deviceObject )
 {
 	using namespace pr;
 
-	pr::trivial_vector<float> input( 1024 * 1024 * 500 );
+	pr::trivial_vector<float> input( 1024 * 1024 * 100 );
 	for ( int i = 0; i < input.size(); ++i )
 	{
 		input[i] = i / 10.0f;
@@ -20,8 +20,8 @@ void run( ezdx::DeviceObject* deviceObject )
 	ezdx::ConstantBuffer<arguments> constantArg( deviceObject->device() );
 	constantArg->bias = 10.0f;
 
-	std::unique_ptr<ezdx::BufferResource> valueBuffer0( new ezdx::BufferResource( deviceObject->device(), ioDataBytes, sizeof( float ), D3D12_RESOURCE_STATE_COPY_DEST ));
-	std::unique_ptr<ezdx::BufferResource> valueBuffer1( new ezdx::BufferResource( deviceObject->device(), ioDataBytes, sizeof( float ), D3D12_RESOURCE_STATE_COMMON ) );
+	std::unique_ptr<ezdx::BufferResource> valueBuffer0( new ezdx::BufferResource( deviceObject->device(), ioDataBytes, sizeof( float ) ) );
+	std::unique_ptr<ezdx::BufferResource> valueBuffer1( new ezdx::BufferResource( deviceObject->device(), ioDataBytes, sizeof( float ) ) );
 	valueBuffer0->setName( L"valueBuffer0" );
 	valueBuffer1->setName( L"valueBuffer1" );
 	{
@@ -44,24 +44,20 @@ void run( ezdx::DeviceObject* deviceObject )
 	arg->RWStructured( "dst", valueBuffer1.get());
 	arg->Constant("arguments", &constantArg);
 
-	ezdx::DownloadResource downloadResource( deviceObject->device(), ioDataBytes );
-
 	deviceObject->executeCommand([&]( ID3D12GraphicsCommandList* commandList ) {
 		constantArg.updateCommand( commandList );
-
-		// Execute
 		shader.dispatch( commandList, arg.get(), ezdx::dispatchsize( numberOfElement, 64 ), 1, 1);
+	});
 
-		// download
-		ezdx::resourceBarrier( commandList, { valueBuffer1->resourceBarrierTransition( D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE ) } );
 
+	ezdx::DownloadResource downloadResource(deviceObject->device(), ioDataBytes);
+	deviceObject->executeCommand([&](ID3D12GraphicsCommandList* commandList) {
 		commandList->CopyBufferRegion(
 			downloadResource.resource(), 0,
 			valueBuffer1->resource(), 0,
 			valueBuffer1->bytes()
 		);
 	});
-
 
 	std::shared_ptr<ezdx::FenceObject> fence = deviceObject->fence();
 	fence->wait();

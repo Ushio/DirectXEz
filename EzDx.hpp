@@ -518,7 +518,7 @@ public:
 	BufferResource( const BufferResource& ) = delete;
 	void operator=( const BufferResource& ) = delete;
 
-	BufferResource( ID3D12Device* device, int64_t bytes, int64_t structureByteStride, D3D12_RESOURCE_STATES initialState )
+	BufferResource( ID3D12Device* device, int64_t bytes, int64_t structureByteStride, D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON )
 		: _bytes( std::max( bytes, 1LL ) ), _structureByteStride( structureByteStride )
 	{
 		HRESULT hr;
