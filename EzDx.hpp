@@ -31,6 +31,8 @@
 		__debugbreak();                                                                          \
 	}
 
+namespace ezdx {
+
 template <class T>
 class DxPtr
 {
@@ -391,12 +393,15 @@ public:
 		DX_ASSERT(hr == S_OK, "");
 		return (void*)p;
 	}
-	void unmap( int64_t write_beg, int64_t write_end )
+	void unmap( int64_t writeBytesBeg, int64_t writeBytesEnd )
 	{
-		D3D12_RANGE writerange = { write_beg, write_end };
+		D3D12_RANGE writerange = { writeBytesBeg, writeBytesEnd };
 		_resource->Unmap( 0, &writerange );
 	}
-
+	void unmap()
+	{
+		unmap( 0, bytes() );
+	}
 	int64_t bytes()
 	{
 		return _bytes;
@@ -413,6 +418,33 @@ public:
 private:
 	int64_t _bytes;
 	DxPtr<ID3D12Resource> _resource;
+};
+
+template <class T>
+class TypedView
+{
+public:
+	TypedView( const void* p, int64_t bytes )
+	{
+		_p = (const T*)p;
+		_count = bytes / sizeof(T);
+	}
+
+	int64_t count() const 
+	{
+		return _count;
+	}
+	const T* data() const
+	{
+		return _p;
+	}
+	const T& operator[](int64_t i) const
+	{
+		return _p[i];
+	}
+private:
+	const T* _p;
+	int64_t _count;
 };
 
 class DownloadResource
@@ -433,15 +465,31 @@ public:
 			IID_PPV_ARGS( _resource.getAddressOf() ) );
 		DX_ASSERT( hr == S_OK, "" );
 	}
-	void* map( int64_t read_beg, int64_t read_end )
+	const void* map( int64_t readBytesBeg, int64_t readBytesEnd )
 	{
-		D3D12_RANGE readrange = { read_beg, read_end };
+		D3D12_RANGE readrange = { readBytesBeg, readBytesEnd };
 		void* p;
 		HRESULT hr;
 		hr = _resource->Map(0, &readrange, &p);
 		DX_ASSERT(hr == S_OK, "");
 		return p;
 	}
+	const void* map()
+	{
+		return map( 0, bytes() );
+	}
+
+	template <class T>
+	TypedView<T> mapTyped( int64_t readBytesBeg, int64_t readBytesEnd )
+	{
+		return TypedView<T>( map( readBytesBeg, readBytesEnd ), bytes() );
+	}
+	template <class T>
+	TypedView<T> mapTyped()
+	{
+		return mapTyped<T>( 0, bytes() );
+	}
+
 	void unmap()
 	{
 		D3D12_RANGE writerange = {};
@@ -459,7 +507,6 @@ public:
 	{
 		_resource->SetName( name.c_str() );
 	}
-
 private:
 	int64_t _bytes;
 	DxPtr<ID3D12Resource> _resource;
@@ -948,3 +995,5 @@ private:
 	DxPtr<ID3D12PipelineState> _csPipeline;
 	std::map<std::string, int> _var2index;
 };
+
+} // ezdx

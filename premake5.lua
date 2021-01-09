@@ -21,6 +21,7 @@ project "main"
 
     -- Src
     files { "main_simple.cpp" }
+    files { "EzDx.hpp", "EzDx.natvis" }
 
     -- Helper
     files { "libs/d3dx12/*.h" }

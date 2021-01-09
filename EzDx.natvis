@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?> 
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <Type Name="ezdx::TypedView&lt;*&gt;">
+    <DisplayString>{{ size={_count} }}</DisplayString>
+    <Expand>
+      <Item Name="[size]" ExcludeView="simple">_count</Item>
+      <ArrayItems>
+        <Size>_count</Size>
+        <ValuePointer>_p</ValuePointer>
+      </ArrayItems>
+    </Expand>
+  </Type>
+</AutoVisualizer>
