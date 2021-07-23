@@ -12,9 +12,8 @@
 #include <random>
 
 #include "d3dx12.h"
-
-#include "libs/dxc_2020_10-22/inc/d3d12shader.h"
-#include "libs/dxc_2020_10-22/inc/dxcapi.h"
+#include "d3d12shader.h"
+#include "dxcapi.h"
 
 #ifdef max
 #undef max
@@ -160,25 +159,10 @@ static HRESULT assertResourceState( ID3D12GraphicsCommandList* commandList, ID3D
 	return S_OK;
 }
 
-/*
-example)
-(0   + 255) & 0xFFFFFF00 = 0
-(1   + 255) & 0xFFFFFF00 = 256
-(255 + 255) & 0xFFFFFF00 = 256
-(256 + 255) & 0xFFFFFF00 = 256
-(257 + 255) & 0xFFFFFF00 = 512
-(258 + 255) & 0xFFFFFF00 = 512
-*/
-inline uint32_t constantBufferSize( uint32_t bytes )
+inline int64_t alignedExpand( int64_t x, int64_t align )
 {
-	return ( bytes + 255 ) & 0xFFFFFF00;
+	return ( ( x + align - 1 ) / align ) * align;
 }
-
-inline int64_t dispatchsize( int64_t n, int64_t threads )
-{
-	return ( n + threads - 1 ) / threads;
-}
-
 
 class CommandObject
 {
@@ -644,13 +628,15 @@ public:
 	void operator=( const ConstantBuffer& ) = delete;
 
 	ConstantBuffer( DeviceObject* deviceObject )
-		: _bytes( constantBufferSize( std::max<int>( sizeof(T), 1 ) ) )
+		: _bytes( alignedExpand( sizeof(T), 256 ) )
 	{
+		static_assert( 1 <= sizeof(T), "T shouldn't be empty" );
+
 		HRESULT hr;
 		hr = deviceObject->device()->CreateCommittedResource(
 			&CD3DX12_HEAP_PROPERTIES( D3D12_HEAP_TYPE_UPLOAD ),
 			D3D12_HEAP_FLAG_NONE,
-			&CD3DX12_RESOURCE_DESC::Buffer(_bytes),
+			&CD3DX12_RESOURCE_DESC::Buffer( _bytes ),
 			D3D12_RESOURCE_STATE_GENERIC_READ,
 			nullptr,
 			IID_PPV_ARGS(_resource.getAddressOf()));

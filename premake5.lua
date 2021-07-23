@@ -31,10 +31,11 @@ project "main"
     links { "d3d12" }
 
     -- HLSL compiler
-    links { "libs/dxc_2020_10-22/lib/x64/dxcompiler" }
+    includedirs { "libs/dxc_2021_07_01/inc" }
+    links { "libs/dxc_2021_07_01/lib/x64/dxcompiler" }
     postbuildcommands { 
-        "{COPY} ../libs/dxc_2020_10-22/bin/x64/dxcompiler.dll ../bin",
-        "{COPY} ../libs/dxc_2020_10-22/bin/x64/dxil.dll ../bin",
+        "{COPY} ../libs/dxc_2021_07_01/bin/x64/dxcompiler.dll ../bin",
+        "{COPY} ../libs/dxc_2021_07_01/bin/x64/dxil.dll ../bin",
         "mt.exe -manifest ../utf8.manifest -outputresource:$(TargetDir)$(TargetName).exe -nologo"
     }
 

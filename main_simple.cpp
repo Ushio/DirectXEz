@@ -34,13 +34,15 @@ void run( ezdx::DeviceObject* deviceObject )
 
 	for (int i = 0; i < 3; ++i)
 	{
-		shader.dispatch( deviceObject, arg.get(), ezdx::dispatchsize(numberOfElement, 64), 1, 1);
+		shader.dispatch( deviceObject, arg.get(), ezdx::alignedExpand(numberOfElement, 64) / 64, 1, 1);
 	}
 
 	ezdx::TypedView<float> value1View = valueBuffer1->mapTypedForReading<float>(deviceObject, 0, valueBuffer1->bytes());
 	//for (int i = 0; i < value1View.count(); ++i)
 	//{
-	//	printf("%f\n", value1View[i]);
+	//	float truth = 10.0f + std::sin(i / 10.0f);
+	//	float d = std::fabs( value1View[i] - truth);
+	//	printf("%f, %f\n", value1View[i], d );
 	//}
 	valueBuffer1->unmapForReading();
 
