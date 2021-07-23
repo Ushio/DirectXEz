@@ -99,10 +99,18 @@ private:
 inline void enableDebugLayer()
 {
 	DxPtr<ID3D12Debug> debugController;
-	if ( SUCCEEDED( D3D12GetDebugInterface( IID_PPV_ARGS( debugController.getAddressOf() ) ) ) )
+	if ( D3D12GetDebugInterface( IID_PPV_ARGS( debugController.getAddressOf() ) ) != S_OK )
 	{
-		debugController->EnableDebugLayer();
+		return;
 	}
+	debugController->EnableDebugLayer();
+
+	DxPtr<ID3D12Debug3> debug;
+	if (debugController->QueryInterface(IID_PPV_ARGS(debug.getAddressOf())) != S_OK)
+	{
+		return;
+	}
+	debug->SetEnableGPUBasedValidation(true);
 }
 
 inline std::vector<DxPtr<IDXGIAdapter>> getAllAdapters()
@@ -137,6 +145,20 @@ static void resourceBarrier( ID3D12GraphicsCommandList* commandList, std::vector
 {
 	commandList->ResourceBarrier( barrier.size(), barrier.data() );
 }
+static HRESULT assertResourceState( ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource, D3D12_RESOURCE_STATES state )
+{
+	DxPtr<ID3D12DebugCommandList> debugCommandList;
+
+	HRESULT hr;
+	hr = commandList->QueryInterface(IID_PPV_ARGS(debugCommandList.getAddressOf()));
+	if( S_OK != hr )
+	{
+		return hr;
+	}
+	BOOL expected = debugCommandList->AssertResourceState(resource, 0, state);
+	DX_ASSERT(expected, "");
+	return S_OK;
+}
 
 /*
 example)
@@ -157,46 +179,22 @@ inline int64_t dispatchsize( int64_t n, int64_t threads )
 	return ( n + threads - 1 ) / threads;
 }
 
-class FenceObject
-{
-public:
-	FenceObject( const FenceObject& ) = delete;
-	void operator=( const FenceObject& ) = delete;
 
-	FenceObject( ID3D12Device* device, ID3D12CommandQueue* queue )
-	{
-		HRESULT hr;
-		hr = device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( _fence.getAddressOf() ) );
-		DX_ASSERT( hr == S_OK, "" );
-		hr = queue->Signal( _fence.get(), 1 );
-		DX_ASSERT( hr == S_OK, "" );
-	}
-	void wait()
-	{
-		HANDLE e = CreateEvent( nullptr, false, false, nullptr );
-		_fence->SetEventOnCompletion( 1, e );
-		WaitForSingleObject( e, INFINITE );
-		CloseHandle( e );
-	}
-
-private:
-	DxPtr<ID3D12Fence> _fence;
-};
 class CommandObject
 {
 public:
 	CommandObject( const CommandObject& ) = delete;
 	void operator=( const CommandObject& ) = delete;
 
-	CommandObject( ID3D12Device* device, D3D12_COMMAND_LIST_TYPE type )
+	CommandObject( ID3D12Device* device )
 	{
 		HRESULT hr;
-		hr = device->CreateCommandAllocator( type, IID_PPV_ARGS( _allocator.getAddressOf() ) );
+		hr = device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( _allocator.getAddressOf() ) );
 		DX_ASSERT( hr == S_OK, "" );
 
 		hr = device->CreateCommandList(
 			0,
-			type,
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
 			_allocator.get(),
 			nullptr, /* pipeline state */
 			IID_PPV_ARGS( _list.getAddressOf() ) );
@@ -206,12 +204,13 @@ public:
 	{
 		return _list.get();
 	}
-	void storeCommand( std::function<void( ID3D12GraphicsCommandList* commandList )> f )
+	void scopedStoreCommand( std::function<void( ID3D12GraphicsCommandList* commandList )> f )
 	{
-		if ( _isClosed )
+		if (_isClosed)
 		{
-			_list->Reset( _allocator.get(), nullptr );
+			_list->Reset(_allocator.get(), nullptr);
 		}
+
 		f( _list.get() );
 		_list->Close();
 		_isClosed = true;
@@ -301,7 +300,7 @@ public:
 		hr = _device->CreateCommandQueue(&commandQueueDesk, IID_PPV_ARGS(_queue.getAddressOf()));
 		DX_ASSERT(hr == S_OK, "");
 
-		_command = std::unique_ptr<CommandObject>( new CommandObject(_device.get(), D3D12_COMMAND_LIST_TYPE_DIRECT) );
+		_command = std::unique_ptr<CommandObject>( new CommandObject( _device.get() ) );
 
 		DxPtr<IDXGIFactory4> pDxgiFactory;
 		hr = CreateDXGIFactory1( __uuidof( IDXGIFactory1 ), (void**)pDxgiFactory.getAddressOf() );
@@ -328,8 +327,6 @@ public:
 		HRESULT hr;
 		hr = _swapchain->Present( 1, 0 );
 		DX_ASSERT( hr == S_OK, "" );
-
-		fence()->wait();
 	}
 	std::wstring deviceName() const
 	{
@@ -343,15 +340,15 @@ public:
 	{
 		return _totalLaneCount;
 	}
+	ID3D12CommandQueue* queue()
+	{
+		return _queue.get();
+	}
 	void executeCommand(std::function<void(ID3D12GraphicsCommandList* commandList)> f)
 	{
-		_command->storeCommand( f );
+		_command->scopedStoreCommand( f );
 		ID3D12CommandList* const command[] = { _command->list() };
 		_queue->ExecuteCommandLists( 1, command );
-	}
-	std::shared_ptr<FenceObject> fence()
-	{
-		return std::shared_ptr<FenceObject>(new FenceObject(_device.get(), _queue.get()));
 	}
 private:
 	std::string _deviceIIDType;
@@ -364,6 +361,31 @@ private:
 	DxPtr<IDXGISwapChain1> _swapchain;
 	std::unique_ptr<CommandObject> _command;
 };
+class FenceObject
+{
+public:
+	FenceObject(const FenceObject&) = delete;
+	void operator=(const FenceObject&) = delete;
+
+	FenceObject(DeviceObject* deviceObject)
+	{
+		HRESULT hr;
+		hr = deviceObject->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(_fence.getAddressOf()));
+		DX_ASSERT(hr == S_OK, "");
+		hr = deviceObject->queue()->Signal(_fence.get(), 1);
+		DX_ASSERT(hr == S_OK, "");
+	}
+	void wait()
+	{
+		HANDLE e = CreateEvent(nullptr, false, false, nullptr);
+		_fence->SetEventOnCompletion(1, e);
+		WaitForSingleObject(e, INFINITE);
+		CloseHandle(e);
+	}
+private:
+	DxPtr<ID3D12Fence> _fence;
+};
+
 
 class UploadResource
 {
@@ -414,7 +436,6 @@ public:
 	{
 		_resource->SetName( name.c_str() );
 	}
-
 private:
 	int64_t _bytes;
 	DxPtr<ID3D12Resource> _resource;
@@ -424,9 +445,9 @@ template <class T>
 class TypedView
 {
 public:
-	TypedView( const void* p, int64_t bytes )
+	TypedView( void* p, int64_t bytes )
 	{
-		_p = (const T*)p;
+		_p = (T*)p;
 		_count = bytes / sizeof(T);
 	}
 
@@ -434,82 +455,25 @@ public:
 	{
 		return _count;
 	}
+	T* data()
+	{
+		return _p;
+	}
 	const T* data() const
 	{
 		return _p;
+	}
+	T& operator[](int64_t i)
+	{
+		return _p[i];
 	}
 	const T& operator[](int64_t i) const
 	{
 		return _p[i];
 	}
 private:
-	const T* _p;
+	T* _p;
 	int64_t _count;
-};
-
-class DownloadResource
-{
-public:
-	DownloadResource( const DownloadResource& ) = delete;
-	void operator=( const DownloadResource& ) = delete;
-
-	DownloadResource( ID3D12Device* device, int64_t bytes ) : _bytes( std::max( bytes, 1LL ) )
-	{
-		HRESULT hr;
-		hr = device->CreateCommittedResource(
-			&CD3DX12_HEAP_PROPERTIES( D3D12_HEAP_TYPE_READBACK ),
-			D3D12_HEAP_FLAG_NONE,
-			&CD3DX12_RESOURCE_DESC::Buffer( bytes ),
-			D3D12_RESOURCE_STATE_COPY_DEST,
-			nullptr,
-			IID_PPV_ARGS( _resource.getAddressOf() ) );
-		DX_ASSERT( hr == S_OK, "" );
-	}
-	const void* map( int64_t readBytesBeg, int64_t readBytesEnd )
-	{
-		D3D12_RANGE readrange = { readBytesBeg, readBytesEnd };
-		void* p;
-		HRESULT hr;
-		hr = _resource->Map(0, &readrange, &p);
-		DX_ASSERT(hr == S_OK, "");
-		return p;
-	}
-	const void* map()
-	{
-		return map( 0, bytes() );
-	}
-
-	template <class T>
-	TypedView<T> mapTyped( int64_t readBytesBeg, int64_t readBytesEnd )
-	{
-		return TypedView<T>( map( readBytesBeg, readBytesEnd ), bytes() );
-	}
-	template <class T>
-	TypedView<T> mapTyped()
-	{
-		return mapTyped<T>( 0, bytes() );
-	}
-
-	void unmap()
-	{
-		D3D12_RANGE writerange = {};
-		_resource->Unmap(0, &writerange);
-	}
-	int64_t bytes()
-	{
-		return _bytes;
-	}
-	ID3D12Resource* resource()
-	{
-		return _resource.get();
-	}
-	void setName( std::wstring name )
-	{
-		_resource->SetName( name.c_str() );
-	}
-private:
-	int64_t _bytes;
-	DxPtr<ID3D12Resource> _resource;
 };
 
 class BufferResource
@@ -518,11 +482,11 @@ public:
 	BufferResource( const BufferResource& ) = delete;
 	void operator=( const BufferResource& ) = delete;
 
-	BufferResource( ID3D12Device* device, int64_t bytes, int64_t structureByteStride, D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON )
+	BufferResource( DeviceObject* deviceObject, int64_t bytes, int64_t structureByteStride, D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON )
 		: _bytes( std::max( bytes, 1LL ) ), _structureByteStride( structureByteStride )
 	{
 		HRESULT hr;
-		hr = device->CreateCommittedResource(
+		hr = deviceObject->device()->CreateCommittedResource(
 			&CD3DX12_HEAP_PROPERTIES( D3D12_HEAP_TYPE_DEFAULT ),
 			D3D12_HEAP_FLAG_NONE /* I don't know */,
 			&CD3DX12_RESOURCE_DESC::Buffer( _bytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ),
@@ -538,14 +502,6 @@ public:
 	int64_t itemCount() const
 	{
 		return _bytes / _structureByteStride;
-	}
-	D3D12_RESOURCE_BARRIER resourceBarrierUAV()
-	{
-		return CD3DX12_RESOURCE_BARRIER::UAV( _resource.get() );
-	}
-	D3D12_RESOURCE_BARRIER resourceBarrierTransition( D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to )
-	{
-		return CD3DX12_RESOURCE_BARRIER::Transition( _resource.get(), from, to );
 	}
 	ID3D12Resource* resource()
 	{
@@ -566,12 +522,119 @@ public:
 	{
 		_resource->SetName( name.c_str() );
 	}
+
+	void* mapForWriting( DeviceObject *deviceObject )
+	{
+		DX_ASSERT( !_uploader, "");
+
+		HRESULT hr;
+		hr = deviceObject->device()->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+			D3D12_HEAP_FLAG_NONE,
+			&CD3DX12_RESOURCE_DESC::Buffer(_bytes),
+			D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr,
+			IID_PPV_ARGS(_uploader.getAddressOf()));
+		DX_ASSERT( hr == S_OK, "" );
+
+		// no read
+		D3D12_RANGE range = {};
+		void* p;
+		hr = _uploader->Map( 0, &range, &p );
+		DX_ASSERT(hr == S_OK, "");
+		return (void*)p;
+	}
+	void unmapForWriting( DeviceObject *deviceObject, int64_t bytesBeg, int64_t bytesEnd )
+	{
+		DX_ASSERT( _uploader, "");
+		DX_ASSERT( 0 <= bytesBeg, "");
+		DX_ASSERT( bytesEnd <= _bytes, "");
+
+		D3D12_RANGE range = { bytesBeg, bytesEnd };
+		_uploader->Unmap( 0, &range );
+
+		deviceObject->executeCommand(
+			[&](ID3D12GraphicsCommandList* commandList) {
+				commandList->CopyBufferRegion(
+					_resource.get(), bytesBeg,
+					_uploader.get(), bytesBeg, bytesEnd - bytesBeg
+				);
+			}
+		);
+
+		// wait for copying in order to free upload resource.
+		FenceObject fence( deviceObject );
+		fence.wait();
+
+		_uploader = DxPtr<ID3D12Resource>();
+	}
+	template <class T>
+	TypedView<T> mapTypedForWriting( DeviceObject* deviceObject )
+	{
+		void* p = mapForWriting( deviceObject );
+		return TypedView<T>(p, bytes());
+	}
+
+	void* mapForReading( DeviceObject* deviceObject, int64_t bytesBeg, int64_t bytesEnd )
+	{
+		DX_ASSERT( !_downloader, "" );
+		DX_ASSERT( 0 <= bytesBeg, "" );
+		DX_ASSERT( bytesEnd <= _bytes, "" );
+
+		HRESULT hr;
+		hr = deviceObject->device()->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK),
+			D3D12_HEAP_FLAG_NONE,
+			&CD3DX12_RESOURCE_DESC::Buffer(_bytes),
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			nullptr,
+			IID_PPV_ARGS(_downloader.getAddressOf()));
+		DX_ASSERT( hr == S_OK, "" );
+
+		deviceObject->executeCommand( 
+			[&](ID3D12GraphicsCommandList* commandList) {
+				commandList->CopyBufferRegion(
+					_downloader.get(), bytesBeg,
+					_resource.get(), bytesBeg, bytesEnd - bytesBeg
+				);
+			}
+		);
+
+		// wait for copying
+		FenceObject fence(deviceObject);
+		fence.wait();
+
+		D3D12_RANGE range = { bytesBeg, bytesEnd };
+		void* p;
+		hr = _downloader->Map( 0, &range, &p );
+		DX_ASSERT(hr == S_OK, "");
+
+		return (void*)p;
+	}
+	template <class T>
+	TypedView<T> mapTypedForReading(DeviceObject* deviceObject, int64_t bytesBeg, int64_t bytesEnd)
+	{
+		void* p = mapForReading( deviceObject, bytesBeg, bytesEnd );
+		return TypedView<T>( p , bytes() );
+	}
+	void unmapForReading()
+	{
+		DX_ASSERT( _downloader, "");
+		D3D12_RANGE range = {  };
+		_downloader->Unmap(0, &range);
+		_downloader = DxPtr<ID3D12Resource>();
+	}
 private:
 	int64_t _bytes;
 	int64_t _structureByteStride;
 	DxPtr<ID3D12Resource> _resource;
+	DxPtr<ID3D12Resource> _uploader;
+	DxPtr<ID3D12Resource> _downloader;
 };
 
+/*
+ data is D3D12_HEAP_TYPE_UPLOAD pointer. please make sure this object is alive during shader execution.
+*/
 template <class T>
 class ConstantBuffer
 {
@@ -579,40 +642,29 @@ public:
 	ConstantBuffer( const ConstantBuffer& ) = delete;
 	void operator=( const ConstantBuffer& ) = delete;
 
-	ConstantBuffer( ID3D12Device* device )
+	ConstantBuffer( DeviceObject* deviceObject )
 		: _bytes( constantBufferSize( std::max<int>( sizeof(T), 1 ) ) )
 	{
 		HRESULT hr;
-		hr = device->CreateCommittedResource(
-			&CD3DX12_HEAP_PROPERTIES( D3D12_HEAP_TYPE_DEFAULT ),
-			D3D12_HEAP_FLAG_NONE /* I don't know */,
-			&CD3DX12_RESOURCE_DESC::Buffer( _bytes ),
-			D3D12_RESOURCE_STATE_COMMON,
+		hr = deviceObject->device()->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES( D3D12_HEAP_TYPE_UPLOAD ),
+			D3D12_HEAP_FLAG_NONE,
+			&CD3DX12_RESOURCE_DESC::Buffer(_bytes),
+			D3D12_RESOURCE_STATE_GENERIC_READ,
 			nullptr,
-			IID_PPV_ARGS( _resource.getAddressOf() ) );
-		DX_ASSERT( hr == S_OK, "" );
-		_uploader = std::unique_ptr<UploadResource>( new UploadResource( device, _bytes ) );
-		_ptr = (T *)_uploader->map();
+			IID_PPV_ARGS(_resource.getAddressOf()));
+		DX_ASSERT(hr == S_OK, "");
+
+		D3D12_RANGE range = {};
+		void* p;
+		hr = _resource->Map(0, &range, &p);
+		DX_ASSERT(hr == S_OK, "");
+		_ptr = (T *)p;
 	}
 	~ConstantBuffer()
 	{
-		_uploader->unmap( 0, _bytes );
-	}
-	void updateCommand( ID3D12GraphicsCommandList* commandList )
-	{
-		resourceBarrier(commandList, {
-			CD3DX12_RESOURCE_BARRIER::Transition( _resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST )
-		});
-
-		commandList->CopyBufferRegion(
-			_resource.get(), 0,
-			_uploader->resource(), 0,
-			sizeof(T)
-		);
-
-		resourceBarrier(commandList, {
-			CD3DX12_RESOURCE_BARRIER::Transition(_resource.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON )
-		});
+		D3D12_RANGE range = {};
+		_resource->Unmap( 0, &range );
 	}
 	ID3D12Resource* resource()
 	{
@@ -621,7 +673,7 @@ public:
 	int64_t bytes() const {
 		return _bytes;
 	}
-	// please make sure you don't write something to this ptr.
+	// please not read from this ptr
 	// https://docs.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12resource-map
 	T* operator->()
 	{
@@ -631,7 +683,6 @@ private:
 	T* _ptr;
 	int64_t _bytes = 0;
 	DxPtr<ID3D12Resource> _resource;
-	std::unique_ptr<UploadResource> _uploader;
 };
 
 class DXCFileBlob : public IDxcBlob
@@ -769,6 +820,11 @@ public:
 		h.ptr += _increment * _var2index[var];
 		_device->CreateConstantBufferView(&d, h);
 	}
+	template <class T>
+	void ConstantGlobal(ConstantBuffer<T>* resource)
+	{
+		Constant("$Globals", resource);
+	}
 	ID3D12DescriptorHeap* descriptorHeap()
 	{
 		return _bufferHeap.get();
@@ -783,7 +839,7 @@ private:
 class Shader
 {
 public:
-	Shader( ID3D12Device *device, const char *filename, const char *includeDir, CompileMode compileMode )
+	Shader( DeviceObject *deviceObject, const char *filename, const char *includeDir, CompileMode compileMode )
 	{
 		HRESULT hr;
 		DxPtr<IDxcIncludeHandler> pIncludeHandler;
@@ -965,7 +1021,7 @@ public:
 		hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, signatureBlob.getAddressOf(), nullptr);
 		DX_ASSERT(hr == S_OK, "");
 
-		hr = device->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(_signature.getAddressOf()));
+		hr = deviceObject->device()->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(_signature.getAddressOf()));
 		DX_ASSERT(hr == S_OK, "");
 
 		D3D12_COMPUTE_PIPELINE_STATE_DESC ppDesc = {};
@@ -974,21 +1030,25 @@ public:
 		ppDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 		ppDesc.NodeMask = 0;
 		ppDesc.pRootSignature = _signature.get();
-		hr = device->CreateComputePipelineState(&ppDesc, IID_PPV_ARGS(_csPipeline.getAddressOf()));
+		hr = deviceObject->device()->CreateComputePipelineState(&ppDesc, IID_PPV_ARGS(_csPipeline.getAddressOf()));
 		DX_ASSERT(hr == S_OK, "");
 	}
-	ArgumentHeap* createDescriptorHeap( ID3D12Device* device ) const
+	ArgumentHeap* createArgumentHeap( ID3D12Device* device ) const
 	{
 		return new ArgumentHeap( device, _var2index );
 	}
-	void dispatch(ID3D12GraphicsCommandList* commandList, ArgumentHeap* arg, int64_t x, int64_t y, int64_t z)
+
+	// asynchronous
+	void dispatch( DeviceObject* deviceObject, ArgumentHeap* arg, int64_t x, int64_t y, int64_t z)
 	{
-		ID3D12DescriptorHeap* heap = arg->descriptorHeap();
-		commandList->SetDescriptorHeaps( 1, &heap );
-		commandList->SetPipelineState(_csPipeline.get());
-		commandList->SetComputeRootSignature(_signature.get());
-		commandList->SetComputeRootDescriptorTable( 0, heap->GetGPUDescriptorHandleForHeapStart() );
-		commandList->Dispatch( x, y, z );
+		deviceObject->executeCommand([&](ID3D12GraphicsCommandList* commandList) {
+			ID3D12DescriptorHeap* heap = arg->descriptorHeap();
+			commandList->SetDescriptorHeaps( 1, &heap );
+			commandList->SetPipelineState(_csPipeline.get());
+			commandList->SetComputeRootSignature(_signature.get());
+			commandList->SetComputeRootDescriptorTable( 0, heap->GetGPUDescriptorHandleForHeapStart() );
+			commandList->Dispatch( x, y, z );
+		});
 	}
 private:
 	DxPtr<ID3D12RootSignature> _signature;
