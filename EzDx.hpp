@@ -270,7 +270,7 @@ public:
 		DX_ASSERT( hr == S_OK, "" );
 
 		D3D12_FEATURE_DATA_SHADER_MODEL shaderModelFeature = {};
-		shaderModelFeature.HighestShaderModel = D3D_SHADER_MODEL_6_5;
+		shaderModelFeature.HighestShaderModel = D3D_SHADER_MODEL_6_6;
 		hr = _device->CheckFeatureSupport( D3D12_FEATURE_SHADER_MODEL, &shaderModelFeature, sizeof( shaderModelFeature ) );
 		DX_ASSERT( hr == S_OK, "" );
 
@@ -283,6 +283,7 @@ public:
 				{ D3D_SHADER_MODEL_6_3, "D3D_SHADER_MODEL_6_3" },
 				{ D3D_SHADER_MODEL_6_4, "D3D_SHADER_MODEL_6_4" },
 				{ D3D_SHADER_MODEL_6_5, "D3D_SHADER_MODEL_6_5" },
+				{ D3D_SHADER_MODEL_6_6, "D3D_SHADER_MODEL_6_6" },
 			};
 		_highestShaderModel = sm_to_s[shaderModelFeature.HighestShaderModel];
 
